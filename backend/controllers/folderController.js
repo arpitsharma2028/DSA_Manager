@@ -1,22 +1,25 @@
-import pool from "../config/db.js";
+import sql from "../config/db.js";
 
 export const getFolders = async (req, res) => {
   try {
-    const [rows] = await pool.query(
-      `SELECT f.*,
+    const rows = await sql`
+      SELECT f.*,
         (SELECT COUNT(*) FROM questions q WHERE q.folder_id = f.id) AS question_count,
         (SELECT COUNT(*) FROM questions q WHERE q.user_id = f.user_id AND q.revisit = TRUE AND q.revisit_done = FALSE) AS revisit_count
-       FROM folders f
-       WHERE f.user_id = ?
-       ORDER BY f.is_system DESC, f.name ASC`,
-      [req.user.id]
-    );
+      FROM folders f
+      WHERE f.user_id = ${req.user.id}
+      ORDER BY f.is_system DESC, f.name ASC
+    `;
 
     const folders = rows.map((folder) => {
+      const questionCount = Number(folder.question_count || 0);
+      const revisitCount = Number(folder.revisit_count || 0);
+
       if (folder.name === "REVISIT") {
-        return { ...folder, question_count: folder.revisit_count };
+        return { ...folder, question_count: revisitCount };
       }
-      return folder;
+
+      return { ...folder, question_count: questionCount };
     });
 
     return res.json(folders);
@@ -33,14 +36,17 @@ export const createFolder = async (req, res) => {
       return res.status(400).json({ message: "Folder name is required" });
     }
 
-    const [result] = await pool.query(
-      "INSERT INTO folders (user_id, name) VALUES (?, ?)",
-      [req.user.id, name.trim()]
-    );
+    const insertedFolders = await sql`
+      INSERT INTO folders (user_id, name)
+      VALUES (${req.user.id}, ${name.trim()})
+      RETURNING id, name
+    `;
+
+    const folder = insertedFolders[0];
 
     return res.status(201).json({
-      id: result.insertId,
-      name: name.trim()
+      id: folder.id,
+      name: folder.name
     });
   } catch (error) {
     return res.status(500).json({ message: "Server error", error: error.message });
@@ -52,10 +58,10 @@ export const renameFolder = async (req, res) => {
     const { id } = req.params;
     const { name } = req.body;
 
-    const [rows] = await pool.query(
-      "SELECT * FROM folders WHERE id = ? AND user_id = ?",
-      [id, req.user.id]
-    );
+    const rows = await sql`
+      SELECT * FROM folders
+      WHERE id = ${id} AND user_id = ${req.user.id}
+    `;
 
     if (rows.length === 0) {
       return res.status(404).json({ message: "Folder not found" });
@@ -65,7 +71,11 @@ export const renameFolder = async (req, res) => {
       return res.status(400).json({ message: "This folder cannot be renamed" });
     }
 
-    await pool.query("UPDATE folders SET name = ? WHERE id = ?", [name, id]);
+    await sql`
+      UPDATE folders
+      SET name = ${name}
+      WHERE id = ${id}
+    `;
 
     return res.json({ message: "Folder renamed successfully" });
   } catch (error) {
@@ -77,10 +87,10 @@ export const deleteFolder = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const [rows] = await pool.query(
-      "SELECT * FROM folders WHERE id = ? AND user_id = ?",
-      [id, req.user.id]
-    );
+    const rows = await sql`
+      SELECT * FROM folders
+      WHERE id = ${id} AND user_id = ${req.user.id}
+    `;
 
     if (rows.length === 0) {
       return res.status(404).json({ message: "Folder not found" });
@@ -90,7 +100,10 @@ export const deleteFolder = async (req, res) => {
       return res.status(400).json({ message: "This folder cannot be deleted" });
     }
 
-    await pool.query("DELETE FROM folders WHERE id = ?", [id]);
+    await sql`
+      DELETE FROM folders
+      WHERE id = ${id}
+    `;
 
     return res.json({ message: "Folder deleted successfully" });
   } catch (error) {

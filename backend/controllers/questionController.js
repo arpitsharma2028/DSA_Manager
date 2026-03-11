@@ -1,10 +1,11 @@
-import pool from "../config/db.js";
+import sql from "../config/db.js";
 import { fetchQuestionMeta } from "../utils/fetchQuestionMeta.js";
 import { analyzeCode } from "../utils/analyzeCode.js";
 
 export const fetchMetaFromLink = async (req, res) => {
   try {
     const { link } = req.body;
+
     if (!link) {
       return res.status(400).json({ message: "Link is required" });
     }
@@ -12,7 +13,9 @@ export const fetchMetaFromLink = async (req, res) => {
     const meta = await fetchQuestionMeta(link);
     return res.json(meta);
   } catch (error) {
-    return res.status(500).json({ message: "Failed to fetch metadata", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch metadata", error: error.message });
   }
 };
 
@@ -22,7 +25,9 @@ export const analyzeQuestionCode = async (req, res) => {
     const analysis = await analyzeCode(code, title);
     return res.json(analysis);
   } catch (error) {
-    return res.status(500).json({ message: "Failed to analyze code", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to analyze code", error: error.message });
   }
 };
 
@@ -30,40 +35,39 @@ export const getQuestionsByFolder = async (req, res) => {
   try {
     const { folderId } = req.params;
 
-    const [folderRows] = await pool.query(
-      "SELECT * FROM folders WHERE id = ? AND user_id = ?",
-      [folderId, req.user.id]
-    );
+    const folderRows = await sql`
+      SELECT * FROM folders
+      WHERE id = ${folderId} AND user_id = ${req.user.id}
+    `;
 
     if (folderRows.length === 0) {
       return res.status(404).json({ message: "Folder not found" });
     }
 
     const folder = folderRows[0];
-    let query = "";
-    let params = [];
+    let questions = [];
 
     if (folder.name === "REVISIT") {
-      query = `
+      questions = await sql`
         SELECT q.*, f.name AS folder_name
         FROM questions q
         JOIN folders f ON q.folder_id = f.id
-        WHERE q.user_id = ? AND q.revisit = TRUE AND q.revisit_done = FALSE
+        WHERE q.user_id = ${req.user.id}
+          AND q.revisit = TRUE
+          AND q.revisit_done = FALSE
         ORDER BY q.revisit_date ASC
       `;
-      params = [req.user.id];
     } else {
-      query = `
+      questions = await sql`
         SELECT q.*, f.name AS folder_name
         FROM questions q
         JOIN folders f ON q.folder_id = f.id
-        WHERE q.user_id = ? AND q.folder_id = ?
+        WHERE q.user_id = ${req.user.id}
+          AND q.folder_id = ${folderId}
         ORDER BY q.created_at DESC
       `;
-      params = [req.user.id, folderId];
     }
 
-    const [questions] = await pool.query(query, params);
     return res.json(questions);
   } catch (error) {
     return res.status(500).json({ message: "Server error", error: error.message });
@@ -110,33 +114,47 @@ export const createQuestion = async (req, res) => {
     const finalExpectedTc = expected_tc || analysis.expected_tc;
     const finalExpectedSc = expected_sc || analysis.expected_sc;
 
-    const [result] = await pool.query(
-      `INSERT INTO questions (
-        user_id, folder_id, title, link, platform, difficulty, description, code,
-        my_tc, my_sc, expected_tc, expected_sc,
-        revisit, revisit_date, revisit_done
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)`,
-      [
-        req.user.id,
+    const insertedQuestions = await sql`
+      INSERT INTO questions (
+        user_id,
         folder_id,
-        finalTitle,
+        title,
         link,
-        finalPlatform,
-        finalDifficulty,
-        description || "",
-        code || "",
-        finalMyTc,
-        finalMySc,
-        finalExpectedTc,
-        finalExpectedSc,
-        !!revisit,
-        revisitDate
-      ]
-    );
+        platform,
+        difficulty,
+        description,
+        code,
+        my_tc,
+        my_sc,
+        expected_tc,
+        expected_sc,
+        revisit,
+        revisit_date,
+        revisit_done
+      )
+      VALUES (
+        ${req.user.id},
+        ${folder_id},
+        ${finalTitle},
+        ${link},
+        ${finalPlatform},
+        ${finalDifficulty},
+        ${description || ""},
+        ${code || ""},
+        ${finalMyTc},
+        ${finalMySc},
+        ${finalExpectedTc},
+        ${finalExpectedSc},
+        ${!!revisit},
+        ${revisitDate},
+        FALSE
+      )
+      RETURNING id
+    `;
 
     return res.status(201).json({
       message: "Question created successfully",
-      id: result.insertId
+      id: insertedQuestions[0].id
     });
   } catch (error) {
     return res.status(500).json({ message: "Server error", error: error.message });
@@ -163,10 +181,10 @@ export const updateQuestion = async (req, res) => {
       expected_sc
     } = req.body;
 
-    const [existingRows] = await pool.query(
-      "SELECT * FROM questions WHERE id = ? AND user_id = ?",
-      [id, req.user.id]
-    );
+    const existingRows = await sql`
+      SELECT * FROM questions
+      WHERE id = ${id} AND user_id = ${req.user.id}
+    `;
 
     if (existingRows.length === 0) {
       return res.status(404).json({ message: "Question not found" });
@@ -174,8 +192,11 @@ export const updateQuestion = async (req, res) => {
 
     const existing = existingRows[0];
     const finalLink = link || existing.link;
+    const finalCode = code ?? existing.code;
+    const finalTitleForAnalysis = title || existing.title;
+
     const meta = await fetchQuestionMeta(finalLink);
-    const analysis = await analyzeCode(code ?? existing.code, title || meta.title);
+    const analysis = await analyzeCode(finalCode, finalTitleForAnalysis || meta.title);
 
     let revisitDate = null;
     if (revisit && revisit_days) {
@@ -185,42 +206,25 @@ export const updateQuestion = async (req, res) => {
       revisitDate = existing.revisit_date;
     }
 
-    await pool.query(
-      `UPDATE questions SET
-        folder_id = ?,
-        title = ?,
-        link = ?,
-        platform = ?,
-        difficulty = ?,
-        description = ?,
-        code = ?,
-        my_tc = ?,
-        my_sc = ?,
-        expected_tc = ?,
-        expected_sc = ?,
-        revisit = ?,
-        revisit_date = ?,
-        revisit_done = ?
-       WHERE id = ? AND user_id = ?`,
-      [
-        folder_id || existing.folder_id,
-        title || meta.title,
-        finalLink,
-        platform || meta.platform || existing.platform,
-        difficulty || meta.difficulty || existing.difficulty,
-        description ?? existing.description,
-        code ?? existing.code,
-        my_tc || analysis.my_tc,
-        my_sc || analysis.my_sc,
-        expected_tc || analysis.expected_tc,
-        expected_sc || analysis.expected_sc,
-        !!revisit,
-        revisitDate,
-        !!revisit_done,
-        id,
-        req.user.id
-      ]
-    );
+    await sql`
+      UPDATE questions
+      SET
+        folder_id = ${folder_id || existing.folder_id},
+        title = ${title || meta.title},
+        link = ${finalLink},
+        platform = ${platform || meta.platform || existing.platform},
+        difficulty = ${difficulty || meta.difficulty || existing.difficulty},
+        description = ${description ?? existing.description},
+        code = ${finalCode},
+        my_tc = ${my_tc || analysis.my_tc},
+        my_sc = ${my_sc || analysis.my_sc},
+        expected_tc = ${expected_tc || analysis.expected_tc},
+        expected_sc = ${expected_sc || analysis.expected_sc},
+        revisit = ${!!revisit},
+        revisit_date = ${revisitDate},
+        revisit_done = ${!!revisit_done}
+      WHERE id = ${id} AND user_id = ${req.user.id}
+    `;
 
     return res.json({ message: "Question updated successfully" });
   } catch (error) {
@@ -232,10 +236,10 @@ export const deleteQuestion = async (req, res) => {
   try {
     const { id } = req.params;
 
-    await pool.query("DELETE FROM questions WHERE id = ? AND user_id = ?", [
-      id,
-      req.user.id
-    ]);
+    await sql`
+      DELETE FROM questions
+      WHERE id = ${id} AND user_id = ${req.user.id}
+    `;
 
     return res.json({ message: "Question deleted successfully" });
   } catch (error) {

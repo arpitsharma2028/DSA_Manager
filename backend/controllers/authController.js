@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import pool from "../config/db.js";
+import sql from "../config/db.js";
 
 export const register = async (req, res) => {
   try {
@@ -10,10 +10,9 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: "Username and password required" });
     }
 
-    const [existing] = await pool.query(
-      "SELECT id FROM users WHERE username = ?",
-      [username]
-    );
+    const existing = await sql`
+      SELECT id FROM users WHERE username = ${username}
+    `;
 
     if (existing.length > 0) {
       return res.status(400).json({ message: "Username already exists" });
@@ -21,16 +20,18 @@ export const register = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const [result] = await pool.query(
-      "INSERT INTO users (username, password) VALUES (?, ?)",
-      [username, hashedPassword]
-    );
+    const insertedUsers = await sql`
+      INSERT INTO users (username, password)
+      VALUES (${username}, ${hashedPassword})
+      RETURNING id, username
+    `;
 
-    await pool.query(
-      `INSERT INTO folders (user_id, name, is_system, can_rename, can_delete)
-       VALUES (?, 'REVISIT', TRUE, FALSE, FALSE)`,
-      [result.insertId]
-    );
+    const user = insertedUsers[0];
+
+    await sql`
+      INSERT INTO folders (user_id, name, is_system, can_rename, can_delete)
+      VALUES (${user.id}, 'REVISIT', TRUE, FALSE, FALSE)
+    `;
 
     return res.status(201).json({ message: "User registered successfully" });
   } catch (error) {
@@ -42,10 +43,9 @@ export const login = async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    const [users] = await pool.query(
-      "SELECT * FROM users WHERE username = ?",
-      [username]
-    );
+    const users = await sql`
+      SELECT * FROM users WHERE username = ${username}
+    `;
 
     if (users.length === 0) {
       return res.status(400).json({ message: "Invalid credentials" });
