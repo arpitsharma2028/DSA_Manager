@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://dsa-manager.onrender.com/api/$1"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/"
+    }
+  ]
+}
